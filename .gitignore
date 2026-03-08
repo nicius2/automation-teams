@@ -1,0 +1,23 @@
+# Credenciais — nunca commitar!
+.env
+.token_cache*.json
+
+# Sessão do browser (Playwright — contém dados de login)
+browser_session/
+
+# Sessão WhatsApp
+whatsapp-server/auth_info/
+
+# Node
+whatsapp-server/node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Logs
+*.log
