@@ -188,20 +188,27 @@ _JS_GET_MESSAGES = """() => {
 _AT_MENTION_RE_CACHE: dict[str, re.Pattern] = {}
 
 def _get_mention_patterns() -> list[re.Pattern]:
-    """Retorna regexes que detectam @mencao para cada target."""
+    """Retorna regexes que detectam @mencao para cada target, incluindo apenas o primeiro nome."""
     patterns = []
     for target in MENTION_TARGETS:
         key = target
         if key not in _AT_MENTION_RE_CACHE:
             # Aceita @Nome, @Nome Sobrenome, <@...>, spans com o nome
-            escaped = re.escape(target)
+            parts = target.split()
+            first_name = parts[0]
+            
+            # Se for nome composto cria (Nome Sobrenome|Nome)
+            if len(parts) > 1:
+                target_re = rf"({re.escape(target)}|{re.escape(first_name)})"
+            else:
+                target_re = re.escape(target)
+                
             _AT_MENTION_RE_CACHE[key] = re.compile(
-                rf'@{escaped}',
+                rf'@{target_re}\b',
                 re.IGNORECASE
             )
         patterns.append(_AT_MENTION_RE_CACHE[key])
     return patterns
-
 
 def _is_mentioned(text: str) -> bool:
     """True se o texto contém @Nome do alvo monitorado."""
@@ -482,7 +489,9 @@ _JS_GET_MENTIONS_IN_CHAT = """(targetNames) => {
         const title = el.getAttribute('title') || el.getAttribute('data-mention') || '';
         const isTarget = targetNames.some(t => {
             const lowT = t.toLowerCase();
-            return name.toLowerCase().includes(lowT) || title.toLowerCase().includes(lowT);
+            const firstName = t.split(' ')[0].toLowerCase();
+            return name.toLowerCase().includes(lowT) || title.toLowerCase().includes(lowT) ||
+                   name.toLowerCase().includes(firstName) || title.toLowerCase().includes(firstName);
         });
         
         // Se não for pelo nome, verifica se tem o estilo de "pílula" (cor de fundo destacada)
