@@ -62,14 +62,16 @@ _JS_IS_TEAMS_APP = """() => {
     if (!isTeamsApp) return false;
 
     const bodyText = document.body?.innerText?.trim() || '';
-    const hasAppContent = bodyText.length > 300;
+    const hasAppContent = bodyText.length > 300 || document.querySelectorAll("div[role='listitem']").length > 5; // Verifica também se há muitos itens na lista (chats)
 
     const hasTeamsElements = !!(
         document.querySelector('[data-tid]') ||
         document.querySelector('[class*="app-"]') ||
         document.querySelector('[id*="teams"]') ||
         document.querySelector('nav') ||
-        document.querySelector('[role="main"]')
+        document.querySelector('[role="main"]') ||
+        document.querySelector('div[aria-label="Chats"]') || // Adiciona seletor para a lista de chats
+        document.querySelector('div[role="grid"][aria-label="Conversas"]') // Adiciona seletor para a área de conversas
     );
 
     return hasAppContent && hasTeamsElements;
@@ -292,7 +294,13 @@ def _is_session_valid() -> bool:
             ctx = pw.chromium.launch_persistent_context(
                 user_data_dir=str(BROWSER_SESSION_DIR),
                 headless=True,  # sempre headless para validação rápida
-                args=["--disable-blink-features=AutomationControlled"],
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                ],
                 viewport={"width": 1280, "height": 800},
                 ignore_https_errors=True,
             )
@@ -336,8 +344,14 @@ def ensure_logged_in() -> bool:
     with sync_playwright() as pw:
         ctx = pw.chromium.launch_persistent_context(
             user_data_dir=str(BROWSER_SESSION_DIR),
-            headless=False,  # sempre visível para o login
-            args=["--disable-blink-features=AutomationControlled"],
+            headless=True,  # sempre headless no ambiente de sandbox
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+            ],
             viewport={"width": 1280, "height": 800},
             ignore_https_errors=True,
         )
@@ -361,7 +375,7 @@ def ensure_logged_in() -> bool:
             success = True
 
         except PWTimeout:
-            console.print("[red]  ❌ Timeout de 5 minutos. Execute novamente e faça login.[/red]")
+            console.print("[red]  ❌ Timeout de 5 minutos. A sessão não foi validada. Por favor, faça login manualmente no Teams Web e tente novamente.[/red]")
             _save_debug_screenshot(page, "login_timeout.png")
         finally:
             ctx.close()
