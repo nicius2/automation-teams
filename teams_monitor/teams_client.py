@@ -457,10 +457,11 @@ _JS_GET_MENTIONS_IN_CHAT = """(targetNames) => {
     const results = [];
     const todayDate = new Date().toISOString().slice(0, 10);
 
-    // 1. Busca elementos de @menção reais (Teams renderiza com classe 'mention')
+    // 1. Busca elementos de @menção reais e pílulas de destaque do Teams
     const mentionEls = document.querySelectorAll(
         '[class*="mention"], [data-mention], [class*="at-mention"], ' +
-        '[class*="atMention"], span[title], [itemtype*="mention"]'
+        '[class*="atMention"], span[title], [itemtype*="mention"], ' +
+        'span[class*="pill"], div[class*="pill"], .ui-mention, .ts-mention-pill'
     );
 
     const mentionedTargets = new Set();
@@ -478,10 +479,17 @@ _JS_GET_MENTIONS_IN_CHAT = """(targetNames) => {
     // 2. Para cada @menção encontrada, pega a mensagem pai + remetente + timestamp
     mentionEls.forEach(el => {
         const name = (el.innerText?.trim() || '').replace(/^@/, '');
-        const isTarget = targetNames.some(t =>
-            name.toLowerCase().includes(t.toLowerCase())
-        );
-        if (!isTarget) return;
+        const title = el.getAttribute('title') || el.getAttribute('data-mention') || '';
+        const isTarget = targetNames.some(t => {
+            const lowT = t.toLowerCase();
+            return name.toLowerCase().includes(lowT) || title.toLowerCase().includes(lowT);
+        });
+        
+        // Se não for pelo nome, verifica se tem o estilo de "pílula" (cor de fundo destacada)
+        const style = window.getComputedStyle(el);
+        const hasHighlightColor = style.backgroundColor !== 'transparent' && style.backgroundColor !== 'rgba(0, 0, 0, 0)';
+        
+        if (!isTarget && !hasHighlightColor) return;
 
         // Sobe na árvore para encontrar o container da mensagem
         const msgContainer = el.closest(
@@ -527,10 +535,14 @@ _JS_GET_MENTIONS_IN_CHAT = """(targetNames) => {
         );
         bodyEls.forEach(bodyEl => {
             const text = bodyEl.innerText?.trim() || '';
-            const isTarget = targetNames.some(t =>
-                text.toLowerCase().includes('@' + t.split(' ')[0].toLowerCase()) ||
-                text.toLowerCase().includes('@' + t.toLowerCase())
-            );
+            const isTarget = targetNames.some(t => {
+                const lowT = t.toLowerCase();
+                const firstName = t.split(' ')[0].toLowerCase();
+                return text.toLowerCase().includes('@' + firstName) || 
+                       text.toLowerCase().includes('@' + lowT) ||
+                       // Verifica se há elementos de pílula dentro do corpo da mensagem
+                       bodyEl.querySelector('[class*="pill"], [class*="mention"], .ui-mention') !== null;
+            });
             if (!isTarget || text.length < 2) return;
 
             const msgContainer = bodyEl.closest(
