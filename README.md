@@ -1,49 +1,47 @@
-# Teams → WhatsApp Automation 🤖
+# Teams → Telegram Automation 🤖
 
-Automação que monitora mensagens no Microsoft Teams com **@Jose** e envia notificações pelo **WhatsApp** (usando Baileys — gratuito, sem custo de API).
+Monitora **menções no Microsoft Teams Web** e envia **notificações em tempo real pelo Telegram**.
 
 ---
 
 ## 🏗️ Arquitetura
 
 ```
-Python Scheduler (APScheduler)
-  └── Teams Monitor (Microsoft Graph API)
-        └── WhatsApp Sender → Baileys Server (Node.js) → WhatsApp
+Scheduler (APScheduler)
+  ↓
+Teams Web Monitor (Playwright)
+  ├── Detecta @menções reais
+  ├── Filtra apenas mensagens de hoje
+  ├── Deduplicação robusta
+  └── Envia via Telegram Bot
 ```
 
 ---
 
 ## 📋 Pré-requisitos
 
-- **Node.js ≥ 17** — [download](https://nodejs.org/)
 - **Python ≥ 3.10** — [download](https://python.org/)
-- **Conta Microsoft 365** com acesso ao Teams
-- **Conta Azure** gratuita para registrar o app (não cobra nada)
+- **Conta Microsoft** (pessoal: Hotmail/Outlook/Live)
+- **Bot do Telegram** (gratuito)
 
 ---
 
-## ⚙️ Passo 1 — Registrar app no Azure (gratuito)
+## ⚙️ Passo 1 — Criar Bot do Telegram (gratuito)
 
-> Isso dá permissão ao script de ler suas mensagens do Teams.
+1. Abra o Telegram e procure por **@BotFather**
+2. Envie `/newbot`
+3. Escolha um nome para o bot (ex: `teams-monitor-bot`)
+4. Copie o **token** fornecido (algo como `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
+5. Adicione ao `.env` como `TELEGRAM_BOT_TOKEN=seu_token_aqui`
 
-1. Acesse [portal.azure.com](https://portal.azure.com) e faça login com sua conta Microsoft
-2. Busque por **"App registrations"** e clique em **"New registration"**
-3. Preencha:
-   - **Name:** `Teams Automation`
-   - **Supported account types:** _Accounts in any organizational directory and personal Microsoft accounts_
-   - **Redirect URI:** deixe em branco
-4. Clique em **Register**
-5. Anote o **Application (client) ID** e o **Directory (tenant) ID** da tela de overview
+### Descobrir seu Chat ID
 
-### Adicionar permissões
-
-1. No menu lateral, vá em **API permissions → Add a permission → Microsoft Graph**
-2. Escolha **Delegated permissions** e adicione:
-   - `ChannelMessage.Read.All`
-   - `Chat.Read`
-   - `Team.ReadBasic.All`
-3. Clique em **Grant admin consent** (ou peça para o admin do tenant)
+1. Envie qualquer mensagem para o seu bot
+2. Execute:
+   ```bash
+   python main.py --get-chat-id
+   ```
+3. Copie o `TELEGRAM_CHAT_ID` exibido
 
 ---
 
@@ -56,13 +54,19 @@ cp .env.example .env
 Edite o arquivo `.env`:
 
 ```env
-AZURE_CLIENT_ID=seu_client_id_aqui
-AZURE_TENANT_ID=seu_tenant_id_aqui
-WHATSAPP_TARGET_PHONE=5511999998888   # seu número com DDI+DDD
-MENTION_TARGETS=jose                  # nomes a monitorar
-MONITOR_START_TIME=08:00
-MONITOR_END_TIME=18:00
-CHECK_INTERVAL_MINUTES=5
+# Bot do Telegram
+TELEGRAM_BOT_TOKEN=seu_token_aqui
+TELEGRAM_CHAT_ID=seu_chat_id_aqui
+TELEGRAM_REQUEST_TIMEOUT=20
+
+# Configurações do Monitor
+MENTION_TARGETS=Vinicius Campos     # Nome(s) para monitorar (case-insensitive)
+MONITOR_START_TIME=08:00             # Início do monitoramento
+MONITOR_END_TIME=23:00               # Fim do monitoramento
+CHECK_INTERVAL_SECONDS=30            # Verificar a cada 30 segundos
+
+# Browser
+BROWSER_HEADLESS=true                # true = background silencioso
 ```
 
 ---
@@ -70,12 +74,6 @@ CHECK_INTERVAL_MINUTES=5
 ## ⚙️ Passo 3 — Instalar dependências
 
 ```bash
-# Servidor WhatsApp (Baileys)
-cd whatsapp-server
-npm install
-cd ..
-
-# Monitor Python
 pip install -r requirements.txt
 ```
 
@@ -83,118 +81,275 @@ pip install -r requirements.txt
 
 ## 🚀 Passo 4 — Uso
 
-### Opção A — Tudo de uma vez (recomendado)
+### Modo: Monitoramento contínuo (recomendado)
 
 ```bash
 python main.py
 ```
 
-Na primeira execução:
-1. O servidor Baileys abre — **escaneie o QR code** com seu WhatsApp  
-   *(Configurações → Dispositivos Vinculados → Vincular dispositivo)*
-2. Uma janela do browser abre pedindo login Microsoft — faça login uma vez
-3. A automação começa a monitorar! ✅
+**Na primeira execução:**
+1. O navegador abre automaticamente
+2. Faça login na sua conta Microsoft
+3. O sistema salva a sessão
+4. Próximas execuções rodam em **background** (sem interface gráfica)
 
-### Opção B — Comandos individuais de teste
+### Modo: Teste manual (sem agenda)
 
 ```bash
-# Testa só autenticação Microsoft
-python main.py --auth-only
-
-# Testa envio WhatsApp (servidor Baileys precisa estar rodando)
-python main.py --test-wa
-
-# Verificação manual das últimas 24h
+# Verifica menções agora
 python main.py --check-now
 
-# Inicia só o servidor Baileys (em outro terminal)
-cd whatsapp-server && node server.js
+# Envia mensagem de teste
+python main.py --test-tg
+
+# Descobre seu Chat ID
+python main.py --get-chat-id
+
+# Limpa cache de menções (debug)
+python main.py --clear-cache
 ```
 
 ---
 
-## 📱 Como funciona o WhatsApp (Baileys)
+## 🚀 Autostart — Executar ao iniciar o PC
 
-O [Baileys](https://github.com/WhiskeySockets/Baileys) conecta ao WhatsApp Web via WebSocket — **o mesmo protocolo do navegador**. É gratuito e usa sua conta pessoal do WhatsApp.
+### Windows
 
-- Na primeira execução: **QR code** no terminal → escaneie uma vez
-- A sessão fica salva em `whatsapp-server/auth_info/` — não precisa escanear de novo
-- Se desconectar: delete a pasta `auth_info/` e escaneie novamente
+#### **Opção 1: Tarefa Agendada (recomendado)**
+
+1. Abra **Agendador de Tarefas** (pesquise no menu Iniciar)
+2. Clique em **Criar Tarefa Básica**
+3. Preencha:
+   - **Nome:** `Teams Automation`
+   - **Descrição:** `Monitora menções do Teams e notifica via Telegram`
+4. Clique em **Próximo**
+5. **Gatilho:**
+   - Selecione **"Ao iniciar o computador"**
+   - Clique em **Próximo**
+6. **Ação:**
+   - Selecione **"Iniciar um programa"**
+   - **Programa/script:** `C:\Python313\python.exe` (ajuste para sua versão Python)
+   - **Adicionar argumentos:** `main.py`
+   - **Iniciar em:** `C:\Users\SEU_USUARIO\Documents\Desafio-Semanal\semana_3\teams-automation`
+7. Clique em **Próximo** e depois **Concluir**
+
+#### **Opção 2: Pasta Inicialização (mais simples)**
+
+1. Crie um arquivo `teams-automation.bat` na raiz do projeto:
+
+```batch
+@echo off
+cd /d "%~dp0"
+python main.py
+pause
+```
+
+2. Copie esse arquivo para a pasta de Inicialização:
+   ```
+   C:\Users\SEU_USUARIO\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\
+   ```
+
+3. Próxima vez que reiniciar, o script executa automaticamente
+
+### Linux / Ubuntu
+
+#### **Opção 1: Serviço systemd (recomendado)**
+
+1. Crie o arquivo de serviço:
+   ```bash
+   sudo nano /etc/systemd/system/teams-automation.service
+   ```
+
+2. Copie o conteúdo:
+   ```ini
+   [Unit]
+   Description=Teams → Telegram Automation
+   After=network-online.target
+   Wants=network-online.target
+
+   [Service]
+   Type=simple
+   User=seu_usuario
+   WorkingDirectory=/home/seu_usuario/Documents/Desafio-Semanal/semana_3/teams-automation
+   ExecStart=/usr/bin/python3 main.py
+   Restart=on-failure
+   RestartSec=30
+   StandardOutput=journal
+   StandardError=journal
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+3. Salve com `Ctrl+O` e depois `Ctrl+X`
+
+4. Habilite o serviço:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable teams-automation
+   sudo systemctl start teams-automation
+   ```
+
+5. Verifique o status:
+   ```bash
+   sudo systemctl status teams-automation
+   ```
+
+#### **Opção 2: Cron Job (alternativa)**
+
+1. Abra o crontab:
+   ```bash
+   crontab -e
+   ```
+
+2. Adicione a linha:
+   ```cron
+   @reboot cd /home/seu_usuario/Documents/Desafio-Semanal/semana_3/teams-automation && /usr/bin/python3 main.py &
+   ```
+
+3. Salve e saia (`:wq` no editor)
 
 ---
 
-## 📌 Estrutura do projeto
+## 📊 Fluxo de detecção de menções
+
+```
+1. Scanner DOM → Identifica elementos de @menção reais (não texto genérico)
+                   ↓
+2. Filtro por data → Apenas mensagens de HOJE (horário local)
+                   ↓
+3. Deduplicação JS → Remove duplicatas dentro do mesmo chat
+                   ↓
+4. Deduplicação Python → Remove se já foi notificado (hash por conteúdo)
+                   ↓
+5. Envio Telegram → Uma notificação por menção única
+```
+
+---
+
+## 🔔 Formato de notificação Telegram
+
+```
+🔔 MENÇÃO NO TEAMS!
+
+━━━━━━━━━━━━━━━━━━━━
+👤 Quem: João Silva
+📍 Onde: Departamento de TI
+🕐 Quando: 12/03/2026 17:30
+━━━━━━━━━━━━━━━━━━━━
+
+💬 Mensagem:
+Oi Vinicius, pode revisar esse código?
+
+━━━━━━━━━━━━━━━━━━━━
+```
+
+---
+
+## 🏗️ Estrutura do projeto
 
 ```
 teams-automation/
 ├── main.py                    # Ponto de entrada
 ├── requirements.txt           # Dependências Python
-├── .env.example               # Template de configuração
+├── README.md                  # Este arquivo
 ├── .env                       # Suas credenciais (não commitar!)
+├── .env.example               # Template de configuração
+├── notified.json              # Cache de menções já notificadas
+├── .hash_version              # Versão do algoritmo de hash
+├── browser_session/           # Sessão do Teams (gerada automaticamente)
 ├── teams_monitor/
-│   ├── config.py              # Configurações
-│   ├── teams_client.py        # Graph API + detecção de menções
-│   ├── whatsapp_sender.py     # Envio via Baileys
-│   └── scheduler.py           # Agendador de tarefas
-└── whatsapp-server/
-    ├── package.json
-    ├── server.js              # Servidor Baileys REST
-    └── auth_info/             # Sessão WhatsApp (gerado automaticamente)
+│   ├── config.py              # Carregamento de configurações
+│   ├── teams_client.py        # Playwright + detecção de menções
+│   ├── telegram_sender.py     # Envio via API Telegram
+│   └── scheduler.py           # Agendador (APScheduler)
+└── test_mention_detection.py  # Testes de detecção
 ```
 
 ---
 
-## 🔔 Exemplo de notificação recebida
+## 🔧 Troubleshooting
 
-```
-🔔 Menção @Jose no Teams!
-
-👤 De: Maria Silva
-🏢 Time: Empresa ABC
-💬 Canal: geral
-🕐 Horário: 05/03/2026 09:15
-
-📝 Mensagem:
-@Jose pode revisar o relatório de vendas?
-```
-
----
-
-## 🛑 Executar automaticamente ao ligar o PC (Linux)
-
-Crie um arquivo de serviço systemd para iniciar automaticamente:
+### "Teams não carregou" / Timeout
 
 ```bash
-# Crie o arquivo de serviçor
-sudo nano /etc/systemd/system/teams-automation.service
+# Limpe a sessão e faça login novamente
+rm -rf browser_session/
+python main.py
 ```
 
-```ini
-[Unit]
-Description=Teams WhatsApp Automation
-After=network.target
+### "Sessão expirada"
 
-[Service]
-Type=simple
-User=SEU_USUARIO
-WorkingDirectory=/home/SEU_USUARIO/Documents/Desafio-Semanal/semana_3/teams-automation
-ExecStart=/usr/bin/python3 main.py
-Restart=on-failure
-RestartSec=30
-
-[Install]
-WantedBy=multi-user.target
-```
+O sistema detecta e pede login automaticamente:
 
 ```bash
-sudo systemctl enable teams-automation
-sudo systemctl start teams-automation
+# Aguarde a janela do navegador abrir e faça login
+python main.py
+```
+
+### "Telegram não acessível"
+
+```bash
+# Teste a conexão
+python main.py --test-tg
+
+# Se falhar, verifique:
+# 1. TELEGRAM_BOT_TOKEN correto em .env
+# 2. Conexão com internet
+# 3. Bot criado em @BotFather
+```
+
+### "Recebendo notificações antigas"
+
+O sistema já filtra apenas mensagens de hoje, mas você pode limpar o cache:
+
+```bash
+python main.py --clear-cache
 ```
 
 ---
 
 ## ⚠️ Avisos importantes
 
-- **Baileys** usa o protocolo do WhatsApp Web — funciona para uso pessoal, mas não é a API oficial
-- O token Microsoft é salvo localmente em `.token_cache.json` — não compartilhe
-- Adicione `.env` e `.token_cache.json` ao `.gitignore` (já configurado)
+- **Sessão do Teams** é salva em `browser_session/` — **não compartilhe essa pasta**
+- **Token Telegram** é salvo em `.env` — **não commitar esse arquivo**
+- O `.gitignore` já está configurado para ignorar esses arquivos
+- A detecção **APENAS** notifica @menções reais, não mencionar o nome casualmente
+- Mensagens são filtradas por data local (não UTC)
+
+---
+
+## 📝 Logging e Debug
+
+Para ver logs detalhados:
+
+```bash
+# Linux/Ubuntu
+sudo journalctl -u teams-automation -f
+
+# Ou rode manualmente:
+python main.py
+
+# Ativa debug no console
+python main.py --check-now
+```
+
+---
+
+## 🤝 Contribuições
+
+Próximas melhorias:
+- [ ] Suporte para múltiplos bots/chats
+- [ ] Interface web de configuração
+- [ ] Notificações de reações e respostas
+- [ ] Histórico de menções
+
+---
+
+## 📄 Licença
+
+MIT — uso livre para fins pessoais e comerciais.
+
+---
+
+**Desenvolvido com ❤️ em Python + Playwright + Telegram**

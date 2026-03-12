@@ -5,7 +5,7 @@ Muito mais simples que WhatsApp — sem servidor Node.js, sem sessão corrompida
 import requests
 from rich.console import Console
 
-from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from .config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_REQUEST_TIMEOUT
 
 console = Console()
 
@@ -42,7 +42,7 @@ def send_telegram(message: str, chat_id: str | None = None) -> bool:
                 "text": message,
                 "parse_mode": "Markdown",
             },
-            timeout=10,
+            timeout=TELEGRAM_REQUEST_TIMEOUT,
         )
         data = resp.json()
         if data.get("ok"):
@@ -53,6 +53,9 @@ def send_telegram(message: str, chat_id: str | None = None) -> bool:
             return False
     except requests.exceptions.ConnectionError:
         console.print("[red]❌ Sem conexão com internet para enviar via Telegram.[/red]")
+        return False
+    except requests.exceptions.Timeout:
+        console.print(f"[red]❌ Timeout Telegram (>{TELEGRAM_REQUEST_TIMEOUT}s). Verifique sua conexão.[/red]")
         return False
     except Exception as exc:
         console.print(f"[red]❌ Erro ao enviar Telegram: {exc}[/red]")

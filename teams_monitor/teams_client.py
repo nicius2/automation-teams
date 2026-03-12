@@ -92,7 +92,8 @@ _JS_GET_CHAT_NAME = """() => {
     for (const sel of selectors) {
         const el = document.querySelector(sel);
         const t = el?.innerText?.trim();
-        if (t && t.length > 0 && t.length < 100) return t;
+        // Aumentado limite de 100 para 300 caracteres para nomes completos de empresas
+        if (t && t.length > 0 && t.length < 300) return t;
     }
     // Fallback: tenta o título da aba ou página
     const title = document.title || '';
@@ -211,10 +212,36 @@ def _get_mention_patterns() -> list[re.Pattern]:
     return patterns
 
 def _is_mentioned(text: str) -> bool:
-    """True se o texto contém @Nome do alvo monitorado."""
-    for p in _get_mention_patterns():
-        if p.search(text):
+    """True se o texto contém @Nome ou Nome do alvo monitorado."""
+    for target in MENTION_TARGETS:
+        parts = target.split()
+        first_name = parts[0]
+
+        # 1. Tenta com @ — nome completo
+        if re.search(rf'@\s*{re.escape(target)}\b', text, re.IGNORECASE):
             return True
+
+        # 2. Tenta com @ — apenas primeiro nome
+        if re.search(rf'@\s*{re.escape(first_name)}\b', text, re.IGNORECASE):
+            return True
+
+        # 3. Tenta sem @ — nome completo (Teams renderiza pílulas sem o @ no texto)
+        match = re.search(rf'\b{re.escape(target)}\b', text, re.IGNORECASE)
+        if match:
+            start, end = match.span()
+            has_context = (start > 0 and end < len(text))
+            if has_context:
+                return True
+
+        # 4. Tenta sem @ — apenas primeiro nome com contexto
+        match = re.search(rf'\b{re.escape(first_name)}\b', text, re.IGNORECASE)
+        if match:
+            start, end = match.span()
+            # Precisa de contexto: pode ter 2+ caracteres antes ou depois
+            has_context = (start >= 2 or end + 2 < len(text))
+            if has_context:
+                return True
+
     return False
 
 
@@ -223,11 +250,14 @@ def _format_message(sender: str, body: str, context_name: str) -> str:
         body = body[:297] + "..."
     ts = datetime.now().strftime("%d/%m/%Y %H:%M")
     return (
-        f"🔔 *Menção no Teams!*\n\n"
-        f"👤 *De:* {sender}\n"
-        f"💬 *Em:* {context_name}\n"
-        f"🕐 *Horário:* {ts}\n\n"
-        f"📝 *Mensagem:*\n{body}"
+        f"🔔 *MENÇÃO NO TEAMS!*\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 *Quem:* *{sender}*\n"
+        f"📍 *Onde:* {context_name}\n"
+        f"🕐 *Quando:* {ts}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💬 *Mensagem:*\n{body}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
     )
 
 
@@ -314,8 +344,12 @@ def _is_session_valid() -> bool:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             try:
                 page.goto(TEAMS_HOME_URL, wait_until="domcontentloaded", timeout=25_000)
+
+                # Aguarda um pouco para DOM carregar completamente
+                page.wait_for_timeout(3_000)
+
                 try:
-                    page.wait_for_function(_JS_IS_TEAMS_APP, timeout=20_000)
+                    page.wait_for_function(_JS_IS_TEAMS_APP, timeout=30_000)
                     console.print("[green]  ✅ Sessão válida![/green]")
                     return True
                 except PWTimeout:
@@ -332,8 +366,8 @@ def _is_session_valid() -> bool:
 def ensure_logged_in() -> bool:
     """
     Garante que há uma sessão válida do Teams.
-    - Se tem sessão válida no browser: retorna True rapidamente
-    - Se não tem sessão ou ela expirou: abre janela para o usuário logar
+    - Se tem sessão válida: retorna True rapidamente (headless)
+    - Se não tem sessão: abre janela visível para o usuário logar
     """
     if _is_session_valid():
         return True
@@ -349,9 +383,10 @@ def ensure_logged_in() -> bool:
     success = False
 
     with sync_playwright() as pw:
+        # Abre SEM headless para poder ver e fazer login
         ctx = pw.chromium.launch_persistent_context(
             user_data_dir=str(BROWSER_SESSION_DIR),
-            headless=True,  # sempre headless no ambiente de sandbox
+            headless=False,  # ← Sempre visível para LOGIN
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
@@ -379,6 +414,7 @@ def ensure_logged_in() -> bool:
 
             SESSION_MARKER.touch()
             console.print("[bold green]  ✅ Login bem-sucedido! Sessão salva.\n[/bold green]")
+            console.print("[dim]  Próximas execuções rodarão em background (sem janela).[/dim]\n")
             success = True
 
         except PWTimeout:
@@ -442,13 +478,23 @@ def check_mentions(since_minutes: int | None = None) -> list[dict]:
         finally:
             ctx.close()
 
-    # Deduplica
+    # Deduplica usando APENAS conteúdo (não channel)
+    # Evita enviar a mesma menção múltiplas vezes se aparecer em vários chats
     seen, unique = set(), []
+    dup_count = 0
     for f in found:
-        k = f["message"]["body"]["content"][:80]
+        content = f["message"]["body"]["content"]
+        # Normaliza igual ao scheduler
+        content_normalized = " ".join(content.split()).lower()
+        k = content_normalized[:80]  # Deduplica por conteúdo apenas
         if k not in seen:
             seen.add(k)
             unique.append(f)
+        else:
+            dup_count += 1
+
+    if dup_count > 0:
+        console.print(f"[dim]  ({dup_count} duplicata(s) removida(s))[/dim]")
 
     if unique:
         console.print(f"[bold green]🎯 {len(unique)} menção(ões) de hoje encontrada(s)![/bold green]")
@@ -460,71 +506,101 @@ def check_mentions(since_minutes: int | None = None) -> list[dict]:
 
 # ── JavaScript: busca @menções reais via DOM ─────────────────────────────────
 _JS_GET_MENTIONS_IN_CHAT = """(targetNames) => {
-    // targetNames: ["Vinicius Campos", ...]
+    // targetNames: ["vinicius campos", "vinicius", ...]
     const results = [];
-    const todayDate = new Date().toISOString().slice(0, 10);
 
-    // 1. Busca elementos de @menção reais e pílulas de destaque do Teams
+    // Data de hoje (em horário local, não UTC)
+    const today = new Date();
+    const todayDate = today.getFullYear() + '-' +
+                      String(today.getMonth() + 1).padStart(2, '0') + '-' +
+                      String(today.getDate()).padStart(2, '0');
+
+    // 1. ESTRATÉGIA 1: Busca APENAS elementos de @menção reais (MAIS RIGOROSO)
+    // Teams renderiza menções como spans/divs com atributos especiais
     const mentionEls = document.querySelectorAll(
         '[class*="mention"], [data-mention], [class*="at-mention"], ' +
-        '[class*="atMention"], span[title], [itemtype*="mention"], ' +
-        'span[class*="pill"], div[class*="pill"], .ui-mention, .ts-mention-pill'
+        '[class*="atMention"], [class*="pill"], [class*="Pill"], ' +
+        'span[title*="@"], ' +
+        '[data-tid*="mention"]'
     );
 
     const mentionedTargets = new Set();
     mentionEls.forEach(el => {
         const name = el.innerText?.trim().replace(/^@/, '') || '';
         const title = el.getAttribute('title') || el.getAttribute('data-mention') || '';
-        const candidate = (name + ' ' + title).toLowerCase();
+        const ariaLabel = el.getAttribute('aria-label') || '';
+        const candidate = (name + ' ' + title + ' ' + ariaLabel).toLowerCase();
+
+        // Verifica se tem estilo de fundo (pílula colorida de menção)
+        const style = window.getComputedStyle(el);
+        const hasBackground = style.backgroundColor && style.backgroundColor !== 'transparent' && style.backgroundColor !== 'rgba(0, 0, 0, 0)';
+
         targetNames.forEach(t => {
-            if (candidate.includes(t.toLowerCase())) {
+            const lowerT = t.toLowerCase();
+            const firstName = lowerT.split(' ')[0];
+            if (candidate.includes(lowerT) ||
+                candidate.includes(firstName) ||
+                hasBackground) {
                 mentionedTargets.add(t);
             }
         });
     });
 
-    // 2. Para cada @menção encontrada, pega a mensagem pai + remetente + timestamp
+    // 2. Para cada elemento de menção, extrai contexto + sender + timestamp
     mentionEls.forEach(el => {
         const name = (el.innerText?.trim() || '').replace(/^@/, '');
         const title = el.getAttribute('title') || el.getAttribute('data-mention') || '';
+        const ariaLabel = el.getAttribute('aria-label') || '';
+
+        // Verifica se este elemento corresponde a um target
         const isTarget = targetNames.some(t => {
             const lowT = t.toLowerCase();
-            const firstName = t.split(' ')[0].toLowerCase();
-            return name.toLowerCase().includes(lowT) || title.toLowerCase().includes(lowT) ||
-                   name.toLowerCase().includes(firstName) || title.toLowerCase().includes(firstName);
+            const firstName = lowT.split(' ')[0];
+            const candidate = (name + ' ' + title + ' ' + ariaLabel).toLowerCase();
+            return candidate.includes(lowT) ||
+                   candidate.includes(firstName) ||
+                   name.toLowerCase() === firstName;
         });
-        
-        // Se não for pelo nome, verifica se tem o estilo de "pílula" (cor de fundo destacada)
-        const style = window.getComputedStyle(el);
-        const hasHighlightColor = style.backgroundColor !== 'transparent' && style.backgroundColor !== 'rgba(0, 0, 0, 0)';
-        
-        if (!isTarget && !hasHighlightColor) return;
 
-        // Sobe na árvore para encontrar o container da mensagem
+        if (!isTarget) return;
+
+        // Encontra a mensagem pai
         const msgContainer = el.closest(
             '[data-tid^="message"], [class*="message"], [class*="Message"], ' +
-            '[class*="thread-item"], [class*="ThreadItem"]'
+            '[class*="thread-item"], [class*="ThreadItem"], [role="article"]'
         );
         if (!msgContainer) return;
 
-        // Verificar se é de hoje
+        // Verifica se é de hoje (CRITÉRIO RIGOROSO)
         const timeEl = msgContainer.querySelector(
             'time, [class*="timestamp"], [class*="Timestamp"]'
         );
         const dtAttr = timeEl?.getAttribute('datetime') || '';
-        if (dtAttr && !dtAttr.startsWith(todayDate)) return;
+        const timeText = timeEl?.innerText?.trim() || '';
 
-        // Remetente
+        // Verifica se é de hoje usando timestamp ISO
+        let isToday = false;
+        if (dtAttr) {
+            isToday = dtAttr.startsWith(todayDate);
+        } else if (timeText) {
+            // Fallback: verifica se tem hora (hoje) vs data (antigo)
+            // Hoje mostra "HH:MM", antigo mostra "dia de mês"
+            isToday = /^\\d{1,2}:\\d{2}/.test(timeText);
+        }
+
+        if (!isToday) return;
+
+        // Extrai remetente
         const authorEl = msgContainer.querySelector(
             '[data-tid="message-author-name"], [class*="author"], [class*="Author"], ' +
-            '[class*="sender"], [class*="Sender"], [class*="displayName"]'
+            '[class*="sender"], [class*="Sender"], [class*="displayName"], [class*="personName"]'
         );
         const sender = authorEl?.innerText?.trim() || '?';
 
-        // Conteúdo completo da mensagem
+        // Extrai conteúdo da mensagem
         const bodyEl = msgContainer.querySelector(
             '[data-tid="message-body"], [class*="message-body"], ' +
-            '[class*="messageBody"], [class*="message-text"]'
+            '[class*="messageBody"], [class*="message-text"], [class*="messageText"]'
         );
         const content = bodyEl?.innerText?.trim() || msgContainer.innerText?.trim() || '';
 
@@ -532,52 +608,17 @@ _JS_GET_MENTIONS_IN_CHAT = """(targetNames) => {
             results.push({
                 sender,
                 content: content.slice(0, 500),
-                time: timeEl?.innerText?.trim() || '',
+                time: timeText,
+                timestamp: dtAttr,
             });
         }
     });
 
-    // 3. Fallback: varre todo o texto de mensagens de hoje e busca @nome
-    if (results.length === 0) {
-        const bodyEls = document.querySelectorAll(
-            '[data-tid="message-body"], [class*="message-body"], [class*="messageBody"], p'
-        );
-        bodyEls.forEach(bodyEl => {
-            const text = bodyEl.innerText?.trim() || '';
-            const isTarget = targetNames.some(t => {
-                const lowT = t.toLowerCase();
-                const firstName = t.split(' ')[0].toLowerCase();
-                return text.toLowerCase().includes('@' + firstName) || 
-                       text.toLowerCase().includes('@' + lowT) ||
-                       // Verifica se há elementos de pílula dentro do corpo da mensagem
-                       bodyEl.querySelector('[class*="pill"], [class*="mention"], .ui-mention') !== null;
-            });
-            if (!isTarget || text.length < 2) return;
-
-            const msgContainer = bodyEl.closest(
-                '[data-tid^="message"], [class*="message"], [class*="thread-item"]'
-            );
-            const timeEl = msgContainer?.querySelector(
-                'time, [class*="timestamp"]'
-            );
-            const dtAttr = timeEl?.getAttribute('datetime') || '';
-            if (dtAttr && !dtAttr.startsWith(todayDate)) return;
-
-            const authorEl = msgContainer?.querySelector(
-                '[data-tid="message-author-name"], [class*="author"], [class*="sender"]'
-            );
-            results.push({
-                sender: authorEl?.innerText?.trim() || '?',
-                content: text.slice(0, 500),
-                time: timeEl?.innerText?.trim() || '',
-            });
-        });
-    }
-
-    // Deduplica
+    // Deduplica por conteúdo apenas (sem sender)
+    // Consistente com Python: channel::content
     const seen = new Set();
     return results.filter(r => {
-        const k = r.content.slice(0, 60);
+        const k = r.content.slice(0, 80).toLowerCase();
         if (seen.has(k)) return false;
         seen.add(k);
         return true;
@@ -666,7 +707,8 @@ def _iterate_chats(page) -> list[dict]:
 
             if not chat_name:
                 raw = item.inner_text() if item else f"Chat {i+1}"
-                chat_name = raw.split("\n")[0].strip()[:80] or f"Chat {i+1}"
+                # Aumentado de 80 para 300 caracteres para aceitar nomes completos
+                chat_name = raw.split("\n")[0].strip()[:300] or f"Chat {i+1}"
 
             console.print(f"  📂 Verificando: [bold]{chat_name}[/bold]")
 

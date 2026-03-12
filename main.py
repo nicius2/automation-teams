@@ -2,10 +2,11 @@
 Ponto de entrada principal da automação Teams → Telegram.
 
 Uso:
-    python main.py                 # Inicia o monitor completo
-    python main.py --test-tg       # Envia mensagem de teste via Telegram
-    python main.py --get-chat-id   # Descobre seu chat_id do Telegram
-    python main.py --check-now     # Faz uma verificação manual agora
+    python main.py                   # Inicia o monitor completo
+    python main.py --test-tg         # Envia mensagem de teste via Telegram
+    python main.py --get-chat-id     # Descobre seu chat_id do Telegram
+    python main.py --check-now       # Faz uma verificação manual agora
+    python main.py --clear-cache     # Limpa cache de menções já notificadas (para debug)
 """
 import sys
 from pathlib import Path
@@ -56,12 +57,41 @@ def main() -> None:
             console.print("[red]❌ Falha. Verifique TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID no .env[/red]")
         return
 
+    # ── Modo: limpar cache de deduplicação ───────────────────────────────────────
+    if "--clear-cache" in args or "--reset-cache" in args:
+        NOTIFIED_FILE = BASE_DIR / "notified.json"
+        if NOTIFIED_FILE.exists():
+            NOTIFIED_FILE.unlink()
+            console.print("[green]✅ Cache de menções notificadas foi apagado![/green]")
+            console.print("[dim]  Na próxima execução, você receberá todas as menções de hoje novamente.[/dim]")
+        else:
+            console.print("[yellow]ℹ️  Nenhum cache para limpar.[/yellow]")
+        return
+
     # ── Modo: verificação manual imediata ──────────────────────────────────────
     if "--check-now" in args:
         import json, hashlib
         from teams_monitor.teams_client import check_mentions
         from teams_monitor.telegram_sender import send_telegram
         NOTIFIED_FILE = BASE_DIR / "notified.json"
+        HASH_VERSION_FILE = BASE_DIR / ".hash_version"
+        HASH_VERSION = "2"
+
+        # Verifica migração de hash
+        def _check_migration():
+            try:
+                current = HASH_VERSION_FILE.read_text().strip() if HASH_VERSION_FILE.exists() else None
+                if current != HASH_VERSION:
+                    console.print("[yellow]⚠️  Detectada mudança na função de hash (v1 → v2).[/yellow]")
+                    console.print("[dim]  Limpando cache de menções antigas para evitar duplicatas...[/dim]")
+                    if NOTIFIED_FILE.exists():
+                        NOTIFIED_FILE.unlink()
+                    HASH_VERSION_FILE.write_text(HASH_VERSION)
+                    console.print("[green]  ✅ Cache atualizado com novo hash!\n[/green]")
+            except Exception:
+                pass
+
+        _check_migration()
 
         def _load() -> set:
             try:
@@ -80,8 +110,13 @@ def main() -> None:
 
         def _hash(item: dict) -> str:
             content = item.get("message", {}).get("body", {}).get("content", "")
-            channel = item.get("channel", "")
-            return hashlib.md5(f"{channel}::{content}".encode()).hexdigest()[:16]
+
+            # Normaliza: remove espaços extras, quebras de linha, transforma em lowercase
+            content_normalized = " ".join(content.split()).lower()
+
+            # Hash por conteúdo APENAS (sem canal/sender)
+            # Garante que a mesma menção não seja notificada múltiplas vezes
+            return hashlib.md5(content_normalized.encode()).hexdigest()[:16]
 
         console.print("\n[bold]🔍 Verificação manual (mensagens de hoje)...[/bold]")
         results = check_mentions()
